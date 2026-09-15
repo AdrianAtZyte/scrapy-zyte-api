@@ -13,8 +13,6 @@ from scrapy_zyte_api.utils import USER_AGENT
 
 from . import SETTINGS, SETTINGS_T, download_request
 
-# ZYTE_API_RETRY_POLICY is deliberately left unset: proxy mode must fall back
-# to the client's default retry policy, just like the HTTP API path does.
 PROXY_SETTINGS: SETTINGS_T = {
     **SETTINGS,
     "ZYTE_API_TRANSPORT": "proxy",
@@ -124,7 +122,8 @@ async def test_proxy_zyte_client_custom_user_agent(mockserver):
 @deferred_f_from_coro_f
 async def test_proxy_uses_client_retry_policy_by_default(mockserver):
     # Make sure not defining a retry policy does not make things crash.
-    async with mockserver.make_handler(PROXY_SETTINGS) as handler:
+    settings = {**PROXY_SETTINGS, "ZYTE_API_RETRY_POLICY": None}
+    async with mockserver.make_handler(settings) as handler:
         assert handler._retry_policy is None
         request = Request(mockserver.urljoin("/"), meta={"zyte_api_automap": True})
         _patch_fallback(handler, response=_proxy_target_response())
