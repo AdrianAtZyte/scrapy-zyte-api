@@ -54,8 +54,10 @@ def _reset_conflict_warnings():
     ("header", "expected"),
     [
         (
-            "foo=bar; Domain=example.com; Path=/x; Secure; HttpOnly; "
-            "SameSite=Lax; Expires=Wed, 21 Oct 2025 07:28:00 GMT",
+            (
+                "foo=bar; Domain=example.com; Path=/x; Secure; HttpOnly; "
+                "SameSite=Lax; Expires=Wed, 21 Oct 2025 07:28:00 GMT"
+            ),
             {
                 "name": "foo",
                 "value": "bar",

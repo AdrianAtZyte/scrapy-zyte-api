@@ -84,7 +84,7 @@ PROVIDER_PARAMS = {"geolocation": "IE"}
 try:
     from scrapy_poet.utils.testing import crawl_single_item_async as crawl_single_item
 except ImportError:  # scrapy-poet < 0.27.0
-    from scrapy_poet.utils.testing import crawl_single_item
+    from scrapy_poet.utils.testing import crawl_single_item  # type: ignore[assignment]
 
 
 def _crawl_single_item(
@@ -1277,6 +1277,30 @@ async def test_screenshot(mockserver):
 
     assert type(item["screenshot"]) is Screenshot
     assert item["screenshot"].body == b"screenshot-body-contents"
+
+
+@deferred_f_from_coro_f
+async def test_screenshot_any_response(mockserver):
+    @attrs.define
+    class SomePage(BasePage):
+        response: AnyResponse
+        screenshot: Screenshot
+
+    class TestSpider(ZyteAPISpider):
+        def parse_(self, response: DummyResponse, page: SomePage):  # type: ignore[override]
+            yield {"screenshot": page.screenshot, "response": page.response}
+
+    settings = provider_settings(mockserver)
+    item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
+    params = crawler.engine.downloader.handlers._handlers["http"].params
+
+    assert len(params) == 1
+    assert params[0] == {"url": url, "browserHtml": True, "screenshot": True}
+
+    assert type(item["screenshot"]) is Screenshot
+    assert item["screenshot"].body == b"screenshot-body-contents"
+    assert type(item["response"]) is AnyResponse
+    assert type(item["response"].response) is BrowserResponse
 
 
 @deferred_f_from_coro_f
