@@ -9,7 +9,8 @@ _HEARTBEAT_INTERVAL = 0.05
 if hasattr(engine.ExecutionEngine, "_SLOT_HEARTBEAT_INTERVAL"):
     engine.ExecutionEngine._SLOT_HEARTBEAT_INTERVAL = _HEARTBEAT_INTERVAL
 else:  # Scrapy < 2.14 hardcodes the interval.
-    _slot_init = engine.Slot.__init__
+    _Slot = engine.Slot  # type: ignore[attr-defined]
+    _slot_init = _Slot.__init__
 
     def _fast_slot_init(self, *args, **kwargs):
         _slot_init(self, *args, **kwargs)
@@ -18,7 +19,7 @@ else:  # Scrapy < 2.14 hardcodes the interval.
             min(interval, _HEARTBEAT_INTERVAL), *a, **kw
         )
 
-    engine.Slot.__init__ = _fast_slot_init
+    _Slot.__init__ = _fast_slot_init
 
 
 def pytest_addoption(parser, pluginmanager):
