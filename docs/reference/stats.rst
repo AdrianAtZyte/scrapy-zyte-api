@@ -30,7 +30,7 @@ the ``scrapy-zyte-api`` prefix:
 
 ``scrapy-zyte-api/error_ratio``
     Ratio of :ref:`unsuccessful responses <zapi-unsuccessful-responses>` to
-    :stat:`scrapy-zyte-api/processed`.
+    :stat:`scrapy-zyte-api/attempts`.
 
 .. stat:: scrapy-zyte-api/error_types/{error_type}
 
@@ -194,4 +194,4 @@ the ``scrapy-zyte-api`` prefix:
 
 ``scrapy-zyte-api/throttle_ratio``
     Ratio of :ref:`rate-limited responses <zapi-rate-limit>` to
-    :stat:`scrapy-zyte-api/processed`.
+    :stat:`scrapy-zyte-api/attempts`.
