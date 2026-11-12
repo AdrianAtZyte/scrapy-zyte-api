@@ -1038,7 +1038,7 @@ async def test_provider_markdown(annotations, options, mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert params == [
         {
@@ -1064,7 +1064,7 @@ async def test_provider_any_response_markdown(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert params == [
         {

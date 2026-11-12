@@ -15,7 +15,6 @@ TRACKED = {
     "includeIframes": 337,
     "pageContent": 338,
     "pageContentOptions": 338,
-    "verifyCertificate": 337,
 }
 """Fields whose misalignment is tracked in the issue or pull request with the
 given number, and therefore not reported until it is closed."""
