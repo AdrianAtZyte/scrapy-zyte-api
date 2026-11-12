@@ -7,10 +7,13 @@ import pytest
 pytest.importorskip("scrapy_poet")
 
 import attrs
+import web_poet
 from scrapy import Request, Spider
+from scrapy.crawler import Crawler
 from scrapy.statscollectors import MemoryStatsCollector
 from scrapy_poet import DummyResponse
 from scrapy_poet.utils.testing import HtmlResource
+from scrapy_poet.utils.testing import crawl_single_item_async as _crawl_single_item
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import Protocol
 from twisted.web.client import Agent
@@ -20,10 +23,12 @@ from web_poet import (
     BrowserResponse,
     HttpResponse,
     ItemPage,
+    css_get,
     default_registry,
     field,
     handle_urls,
 )
+from web_poet.mixins import ResponseShortcutsMixin
 from web_poet.pages import get_item_cls
 from zyte_common_items import (
     AutoProductPage,
@@ -60,18 +65,16 @@ from scrapy_zyte_api.providers import (
     _get_zyte_api_provider_params,
     _set_in_provider_meta_cache,
 )
-from scrapy_zyte_api.utils import (  # type: ignore[attr-defined]
-    _ensure_awaitable,
-    maybe_deferred_to_future,
-)
+from scrapy_zyte_api.utils import maybe_deferred_to_future
 
-from . import _REACTORLESS, SETTINGS, deferred_f_from_coro_f
+from . import _REACTORLESS, _SCRAPY_FROSTWORK, SETTINGS, deferred_f_from_coro_f
 from .mockserver import get_ephemeral_port
 
 if not _REACTORLESS:
     # Importing the reactor is forbidden when running without one; these
     # imports are only used by tests that are skipped in that mode.
     from twisted.internet import reactor
+
 
 # Some tests fetch a URL through a Twisted Agent to inspect the mock server,
 # which is not possible without a reactor.
@@ -81,22 +84,6 @@ requires_reactor = pytest.mark.skipif(
 )
 
 PROVIDER_PARAMS = {"geolocation": "IE"}
-
-
-try:
-    from scrapy_poet.utils.testing import crawl_single_item_async as crawl_single_item
-except ImportError:  # scrapy-poet < 0.27.0
-    from scrapy_poet.utils.testing import crawl_single_item  # type: ignore[assignment]
-
-
-def _crawl_single_item(
-    spider_cls, resource_cls, settings, spider_kwargs=None, port=None
-):
-    return _ensure_awaitable(
-        crawl_single_item(
-            spider_cls, resource_cls, settings, spider_kwargs=spider_kwargs, port=port
-        )
-    )
 
 
 def read_body_without_abort(response):
@@ -334,7 +321,7 @@ async def test_provider_params_remove_unused_options(mockserver):
         "productOptions": {"extractFrom": "httpResponseBody"},
         "productNavigationOptions": {"extractFrom": "httpResponseBody"},
     }
-    _, _, crawler = await _crawl_single_item(ZyteAPISpider, Product, settings)
+    _, _, crawler = await _crawl_single_item(ZyteAPISpider, HtmlResource, settings)
     assert crawler.stats.get_value("scrapy-zyte-api/request_args/product") == 1
     assert crawler.stats.get_value("scrapy-zyte-api/request_args/productOptions") == 1
     assert (
@@ -579,6 +566,13 @@ class RecordingHandler(ScrapyZyteAPIDownloadHandler):
         self.params.append(params)
 
 
+def _recorded_params(crawler: Crawler) -> list:
+    assert crawler.engine
+    handler = crawler.engine.downloader.handlers._handlers["http"]
+    assert isinstance(handler, RecordingHandler)
+    return handler.params
+
+
 def provider_settings(server):
     settings = deepcopy(SETTINGS)
     settings["ZYTE_API_URL"] = server.urljoin("/")
@@ -770,7 +764,7 @@ async def test_provider_non_fingerprint_params_passed_to_api(mockserver):
     settings["RETRY_TIMES"] = 0
 
     _, _, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 2
     assert {param["requestHeaders"]["referer"] for param in params} == {"a", "b"}
@@ -788,7 +782,7 @@ async def test_provider_any_response_only(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -813,7 +807,7 @@ async def test_provider_any_response_http_response_param(mockserver):
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"httpResponseBody": True}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -823,6 +817,29 @@ async def test_provider_any_response_http_response_param(mockserver):
     }
     assert type(item["page"].response) is AnyResponse
     assert type(item["page"].response.response) is HttpResponse
+
+
+@deferred_f_from_coro_f
+async def test_provider_any_response_binary(mockserver):
+    @attrs.define
+    class SomePage(BasePage):
+        response: AnyResponse
+
+    class TestSpider(ZyteAPISpider):
+        def parse_(self, response: DummyResponse, page: SomePage):  # type: ignore[override]
+            yield {"page": page}
+
+    settings = provider_settings(mockserver)
+    settings["ZYTE_API_PROVIDER_PARAMS"] = {
+        "httpResponseBody": True,
+        "customHttpRequestHeaders": [{"name": "Accept", "value": "image/png"}],
+    }
+    item, _, _ = await _crawl_single_item(TestSpider, HtmlResource, settings)
+
+    response = item["page"].response.response
+    assert type(response) is HttpResponse
+    assert response.body == b"\x89PNG\r\n\x1a\n"
+    assert response._encoding is None
 
 
 @deferred_f_from_coro_f
@@ -838,7 +855,7 @@ async def test_provider_any_response_browser_html_param(mockserver):
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"browserHtml": True}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -862,7 +879,7 @@ async def test_provider_any_response_product(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -890,7 +907,7 @@ async def test_provider_any_response_product_extract_from_browser_html(mockserve
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"productOptions": product_options}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -919,7 +936,7 @@ async def test_provider_any_response_product_item_extract_from_browser_html(mock
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"productOptions": product_options}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -950,7 +967,7 @@ async def test_provider_any_response_product_extract_from_browser_html_2(mockser
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"productOptions": product_options}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -983,7 +1000,7 @@ async def test_provider_any_response_product_extract_from_http_response(mockserv
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"productOptions": product_options}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -1075,7 +1092,7 @@ async def test_provider_any_response_product_options_empty(mockserver):
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"productOptions": {}}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -1109,7 +1126,7 @@ async def test_provider_any_response_product_extract_from_http_response_2(mockse
     settings = provider_settings(mockserver)
     settings["ZYTE_API_PROVIDER_PARAMS"] = {"productOptions": product_options}
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -1139,7 +1156,7 @@ async def test_provider_any_response_browser_html(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {"url": url, "browserHtml": True}
@@ -1162,7 +1179,7 @@ async def test_provider_any_response_browser_response(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {"url": url, "browserHtml": True}
@@ -1186,7 +1203,7 @@ async def test_provider_any_response_browser_html_response(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {"url": url, "browserHtml": True}
@@ -1210,7 +1227,7 @@ async def test_provider_any_response_http_response(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -1222,6 +1239,41 @@ async def test_provider_any_response_http_response(mockserver):
     assert type(item["page"].response) is AnyResponse
     assert type(item["page"].response.response) is HttpResponse
     assert type(item["page"].http_response) is HttpResponse
+
+
+@deferred_f_from_coro_f
+async def test_provider_any_response_preextract_selectors(mockserver, monkeypatch):
+    calls = []
+
+    def preextract_selectors(response, classes):
+        classes = list(classes)
+        html_metadata = web_poet.preextract_selectors(response, classes)
+        calls.append((response, classes, html_metadata))
+        return html_metadata
+
+    monkeypatch.setattr(
+        "scrapy_zyte_api.providers.preextract_selectors", preextract_selectors
+    )
+
+    @attrs.define
+    class SomePage(ItemPage, ResponseShortcutsMixin):
+        response: AnyResponse
+        heading = field(css_get("h1::text"))
+
+    class TestSpider(ZyteAPISpider):
+        def parse_(self, response: DummyResponse, page: SomePage):  # type: ignore[override]
+            yield {"heading": page.heading, "page": page}
+
+    settings = provider_settings(mockserver)
+    item, _, _ = await _crawl_single_item(TestSpider, HtmlResource, settings)
+
+    assert item["heading"] == "World!"
+    assert len(calls) == 1
+    response, classes, html_metadata = calls[0]
+    assert response is item["page"].response.response
+    assert response._encoding == ("utf-8" if _SCRAPY_FROSTWORK else "cp1252")
+    assert SomePage in classes
+    assert html_metadata is not None
 
 
 @deferred_f_from_coro_f
@@ -1238,7 +1290,7 @@ async def test_provider_any_response_browser_http_response(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 2
     assert params[0] == {
@@ -1273,7 +1325,7 @@ async def test_provider_any_response_http_response_multiple_pages(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {
@@ -1304,7 +1356,7 @@ async def test_provider_any_response_http_browser_response_multiple_pages(mockse
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 2
     assert params[0] == {
@@ -1328,7 +1380,7 @@ async def test_screenshot(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {"url": url, "screenshot": True}
@@ -1350,7 +1402,7 @@ async def test_screenshot_any_response(mockserver):
 
     settings = provider_settings(mockserver)
     item, url, crawler = await _crawl_single_item(TestSpider, HtmlResource, settings)
-    params = crawler.engine.downloader.handlers._handlers["http"].params
+    params = _recorded_params(crawler)
 
     assert len(params) == 1
     assert params[0] == {"url": url, "browserHtml": True, "screenshot": True}
